@@ -4,26 +4,35 @@ import (
 	"crypto/tls"
 	"fmt"
 	"hostscan/vars"
-	"io/ioutil"
+	"io"
+	"net"
 	"net/http"
 	"strconv"
 	"strings"
 	"time"
 )
 
-func GetHttpBody(url, host string) string{
+func CheckPort(ip string, port string) bool {
+	conn, err := net.DialTimeout("tcp", fmt.Sprintf("%s:%s", ip, port), time.Duration(*vars.Timeout)*time.Second)
+	if err != nil {
+		return false
+	}
+	defer conn.Close()
+	return true
+}
+
+func GetHttpBody(url, host string) string {
 	tr := &http.Transport{
 		TLSClientConfig: &tls.Config{InsecureSkipVerify: true},
 	}
 	client := &http.Client{
 		Transport: tr,
-		Timeout: time.Duration(*vars.Timeout) * time.Second,
+		Timeout:   time.Duration(*vars.Timeout) * time.Second,
 	}
 
 	reqest, err := http.NewRequest("GET", url, nil)
 
 	if err != nil {
-		//elog.Error(fmt.Sprintf("DoGet: %s [%s]", url, err))
 		return ""
 	}
 
@@ -32,46 +41,46 @@ func GetHttpBody(url, host string) string{
 	var ua string
 	if *vars.IsRandUA == true {
 		ua = RandUA()
-	} else{
+	} else {
 		ua = fmt.Sprintf("golang-hostscan/%v", vars.Version)
 	}
 
 	reqest.Header.Add("User-Agent", ua)
 
 	response, err := client.Do(reqest)
-	if response != nil{
+	if response != nil {
 		defer response.Body.Close()
 	}
-	
+
 	if err != nil {
 		//elog.Error(fmt.Sprintf("DoGet: %s [%s]", url, err))
 		return ""
 	}
 
-	filter_status_codes := []int{}
+	filterStatusCodes := []int{}
 	filters := strings.TrimSpace(*vars.FilterRespStatusCodes)
-	if len(filters) > 0{
-		for _,status_code := range strings.Split(filters, ","){
-			filter_status_code, err := strconv.Atoi(strings.TrimSpace(status_code))
-			if err != nil{
+	if len(filters) > 0 {
+		for _, statusCode := range strings.Split(filters, ",") {
+			filterStatusCode, err := strconv.Atoi(strings.TrimSpace(statusCode))
+			if err != nil {
 				continue
 			}
-			filter_status_codes = append(filter_status_codes, filter_status_code)
+			filterStatusCodes = append(filterStatusCodes, filterStatusCode)
 		}
-		if !containsStatusCode(response.StatusCode, filter_status_codes){
+		if !containsStatusCode(response.StatusCode, filterStatusCodes) {
 			return ""
 		}
 	}
 
-	bodyByte, _ := ioutil.ReadAll(response.Body)
+	bodyByte, _ := io.ReadAll(response.Body)
 	body := string(bodyByte)
 
 	return body
 }
 
 func containsStatusCode(a int, l []int) bool {
-	for _,item := range l{
-		if a == item{
+	for _, item := range l {
+		if a == item {
 			return true
 		}
 	}

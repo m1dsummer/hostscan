@@ -2,16 +2,15 @@ package elog
 
 import (
 	"bytes"
+	"fmt"
 	"github.com/op/go-logging"
-	"github.com/schollz/progressbar/v3"
-	"hostscan/vars"
 	"time"
 )
+
 var format logging.Formatter
 
 func init() {
 	format = logging.MustStringFormatter(`%{color}[%{level:.4s}]%{color:reset} [%{time:15:04:05}] %{message}`)
-	vars.ProcessBar = progressbar.NewOptions(0)
 }
 
 type LogFiller struct {
@@ -37,9 +36,9 @@ func LogWithLevel(msg string, level logging.Level) {
 		Level: level,
 	}
 	//println(msg)
-	vars.ProcessBar.WriteLog(toMsg(record))
-
+	fmt.Println(toMsg(record))
 }
+
 func Info(msg string) {
 	LogWithLevel(msg, logging.INFO)
 }

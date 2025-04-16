@@ -1,7 +1,6 @@
 package core
 
 import (
-	"encoding/json"
 	"fmt"
 	"hostscan/elog"
 	"hostscan/models"
@@ -12,52 +11,61 @@ import (
 	"sync"
 )
 
-
 type Task struct {
-	Uri		string
-	Host 	string
+	Uri  string
+	Host string
 }
 
-func getTitle(body string) string{
+func getTitle(body string) string {
 	re := regexp.MustCompile(`<title>([\s\S]*?)</title>`)
 	match := re.FindStringSubmatch(body)
-	if match != nil && len(match) > 1{
+	if match != nil && len(match) > 1 {
 		return strings.TrimSpace(match[1])
-	}else{
+	} else {
 		return ""
 	}
 }
 
-func goScan(taskChan chan Task, wg *sync.WaitGroup){
-	defer wg.Done()
+func goScan(taskChan chan Task, resultChan chan models.Result, taskWg *sync.WaitGroup, threadWg *sync.WaitGroup) {
+	defer threadWg.Done()
+
 	for {
 		select {
 		case task, ok := <-taskChan:
 			if !ok {
 				return
 			} else {
-				vars.ProcessBar.Add(1)
 				body := utils.GetHttpBody(task.Uri, task.Host)
-				if len(body) == 0{
+				if len(body) == 0 {
 					if *vars.Verbose {
-						elog.Info(fmt.Sprintf("Uri: %s, Host: %s --> No Response Body", task.Uri, task.Host))
+						elog.Info(fmt.Sprintf("Uri: %s, Hostname: %s --> No Response Body", task.Uri, task.Host))
 					}
+					taskWg.Done()
 					continue
 				}
 				title := getTitle(body)
-				var result models.Result
-				result.Uri = task.Uri
-				result.Host = task.Host
-				result.Title = title
-				resultStr, _ := json.Marshal(result)
-				if len(title) > 0{
-					elog.Notice(fmt.Sprintf("Uri: %s, Host: %s <==> %s", task.Uri, task.Host, title))
-					utils.WriteLine(string(resultStr), *vars.OutFile)
-				}else{
-					if *vars.Verbose{
-						elog.Warn(fmt.Sprintf("Uri: %s, Host: %s --> No title found", task.Uri, task.Host))
+
+				if title != "" {
+					shouldSkip := false
+					for _, blackTitle := range vars.BlackListTitles {
+						if strings.Contains(title, blackTitle) {
+							shouldSkip = true
+							break
+						}
+					}
+					if shouldSkip {
+						taskWg.Done()
+						continue
 					}
 				}
+
+				result := models.Result{
+					Uri:   task.Uri,
+					Host:  task.Host,
+					Title: title,
+				}
+				resultChan <- result
+				taskWg.Done()
 			}
 		}
 	}

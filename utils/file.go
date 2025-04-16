@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"hostscan/elog"
 	"os"
+	"sync"
 )
 
 func LineCounter(filepath string) (int, error) {
@@ -24,7 +25,7 @@ func LineCounter(filepath string) (int, error) {
 			return 0, err
 		case c == 0: // EOF
 			last_buf = bytes.Trim(last_buf, "\x00")
-			if last_buf[len(last_buf)-1] != lineSep[0]{
+			if last_buf[len(last_buf)-1] != lineSep[0] {
 				count += 1
 			}
 			return count, nil
@@ -36,13 +37,18 @@ func LineCounter(filepath string) (int, error) {
 
 }
 
-func WriteLine(line string, outpath string){
+var fileLock sync.Mutex
+
+func WriteFile(line string, outpath string) {
+	fileLock.Lock()
+	defer fileLock.Unlock()
+
 	f, err := os.OpenFile(outpath, os.O_APPEND|os.O_WRONLY|os.O_CREATE, 0666)
 	if err != nil {
 		panic(err)
 	}
 	defer f.Close()
-	if _, err = f.WriteString(line+"\n"); err != nil {
+	if _, err = f.WriteString(line + "\n"); err != nil {
 		elog.Warn(fmt.Sprintf("Write uri[%s]: %s", line, err))
 	}
 }

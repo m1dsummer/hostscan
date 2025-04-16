@@ -2,9 +2,10 @@ package core
 
 import (
 	"bufio"
+	"encoding/json"
 	"fmt"
-	"github.com/schollz/progressbar/v3"
 	"hostscan/elog"
+	"hostscan/models"
 	"hostscan/utils"
 	"hostscan/vars"
 	"io"
@@ -13,114 +14,41 @@ import (
 	"sync"
 )
 
+func Scan() error {
+	taskWg := sync.WaitGroup{}
+	threadWg := sync.WaitGroup{}
 
-func calcTaskTotal(taskType string, SingleIpCnt int) int{
-	var err error
-	var ipCnt, hostCnt, schemeCnt int
-	schemeCnt = len(vars.Schemes)
-	if taskType == "ip_host" {
-		ipCnt = SingleIpCnt
-		hostCnt = 1
-	}else if taskType == "ipfile_host" {
-		ipCnt, err = utils.LineCounter(*vars.IpFile)
-		if err != nil{
-			elog.Error(fmt.Sprintf("Get Lines Count[%s]: %v", *vars.IpFile, err))
-			return 0
-		}
-		hostCnt = 1
-	}else if taskType == "ip_hostfile" {
-		ipCnt = SingleIpCnt
-		hostCnt, err = utils.LineCounter(*vars.HostFile)
-		if err != nil{
-			elog.Error(fmt.Sprintf("Get Lines Count[%s]: %v", *vars.HostFile, err))
-			return 0
-		}
-	}else if taskType == "ipfile_hostfile" {
-		ipCnt, err = utils.LineCounter(*vars.IpFile)
-		if err != nil{
-			elog.Error(fmt.Sprintf("Get Lines Count[%s]: %v", *vars.IpFile, err))
-			return 0
-		}
-		hostCnt, err = utils.LineCounter(*vars.HostFile)
-		if err != nil{
-			elog.Error(fmt.Sprintf("Get Lines Count[%s]: %v", *vars.HostFile, err))
-			return 0
-		}
-	}else{
-		return 0
+	var ipList []string
+	var hostList []string
+	portList := []string{"80", "443"}
+	schemeList := []string{"http", "https"}
+
+	taskChan := make(chan Task, *vars.Thread)
+	resultChan := make(chan models.Result)
+
+	// standalone ip
+	if strings.Contains(*vars.Ip, "/") {
+		ipList = HandleIpRange(*vars.Ip)
+	} else {
+		ipList = append(ipList, *vars.Ip)
 	}
 
-	totalTask := ipCnt * hostCnt * schemeCnt
-
-	elog.Info(fmt.Sprintf("Total Task: %d   ||   Ip: %d, Host: %d, Scheme:%d", totalTask, ipCnt, hostCnt, schemeCnt))
-
-	return totalTask
-}
-
-func Scan(taskType string) error{
-	wg := sync.WaitGroup{}
-	ip_list := []string{}
-	if strings.Contains(*vars.Ip, "/"){
-		ip_list = HandleIpRange(*vars.Ip)
-	}else{
-		ip_list = append(ip_list, *vars.Ip)
+	// standalone host
+	if len(*vars.Host) > 0 {
+		hostList = append(hostList, *vars.Host)
 	}
 
-	totalTask := calcTaskTotal(taskType, len(ip_list))
-
-	if totalTask == 0{
-		elog.Error(fmt.Sprintf("Get Lines Count: 0"))
-		return nil
-	}
-
-	vars.ProcessBar = progressbar.NewOptions(totalTask,
-		progressbar.OptionClearOnFinish(),
-		progressbar.OptionEnableColorCodes(false),
-		progressbar.OptionShowCount(),
-		progressbar.OptionFullWidth(),
-		progressbar.OptionSetDescription("[*] Scanning..."),
-		progressbar.OptionSetTheme(progressbar.Theme{
-			Saucer:        "=",
-			SaucerHead:    ">",
-			SaucerPadding: " ",
-			BarStart:      "[",
-			BarEnd:        "]",
-		}))
-
-	// 创建一个buffer为vars.ScanNum * 4的channel
-	taskChan := make(chan Task, *vars.Thread*4)
-
-	// 创建vars.ThreadNum个协程
-	for i := 0; i < *vars.Thread; i++ {
-		go goScan(taskChan, &wg)
-		wg.Add(1)
-	}
-
-	if taskType == "ip_host" {
-		for _,ip := range ip_list{
-			for _, scheme := range vars.Schemes {
-				handled_set := HandleCustomPorts(*vars.Host, ip)
-				for _,item := range handled_set{
-					task := Task{
-						Uri:  fmt.Sprintf("%s://%s", scheme, item.IP),
-						Host: item.Host,
-					}
-					// 生产者，不断地往taskChan channel发送数据，直到channel阻塞
-					taskChan <- task
-				}
-			}
-		}
-
-	}else if taskType == "ipfile_host" {
-		ip_f, err := os.Open(*vars.IpFile)
-		defer ip_f.Close()
+	// ip file
+	if len(*vars.IpFile) > 0 {
+		ipF, err := os.Open(*vars.IpFile)
+		defer ipF.Close()
 		if err != nil {
 			return err
 		}
-		ip_buf := bufio.NewReader(ip_f)
+		ipBuf := bufio.NewReader(ipF)
 
 		for {
-			ip, err := ip_buf.ReadString(10)
+			ip, err := ipBuf.ReadString('\n')
 			ip = strings.TrimSpace(ip)
 			if err != nil {
 				if err == io.EOF {
@@ -128,28 +56,21 @@ func Scan(taskType string) error{
 				}
 				return err
 			}
-
-			for _, scheme := range vars.Schemes {
-				handled_set := HandleCustomPorts(*vars.Host, ip)
-				for _,item := range handled_set{
-					task := Task{
-						Uri:  fmt.Sprintf("%s://%s", scheme, item.IP),
-						Host: item.Host,
-					}
-					// 生产者，不断地往taskChan channel发送数据，直到channel阻塞
-					taskChan <- task
-				}
-			}
+			ipList = append(ipList, ip)
 		}
-	}else if taskType == "ip_hostfile" {
-		host_f, err := os.Open(*vars.HostFile)
-		defer host_f.Close()
+	}
+
+	// host file
+	if len(*vars.HostFile) > 0 {
+		hostF, err := os.Open(*vars.HostFile)
+		defer hostF.Close()
 		if err != nil {
 			return err
 		}
-		host_buf := bufio.NewReader(host_f)
+		hostBuf := bufio.NewReader(hostF)
+
 		for {
-			host, err := host_buf.ReadString(10)
+			host, err := hostBuf.ReadString(10)
 			host = strings.TrimSpace(host)
 			if err != nil {
 				if err == io.EOF {
@@ -157,73 +78,81 @@ func Scan(taskType string) error{
 				}
 				return err
 			}
-			for _,ip := range ip_list{
-				for _, scheme := range vars.Schemes {
-					handled_set := HandleCustomPorts(host, ip)
-					for _,item := range handled_set{
-						task := Task{
-							Uri:  fmt.Sprintf("%s://%s", scheme, item.IP),
-							Host: item.Host,
-						}
-						// 生产者，不断地往taskChan channel发送数据，直到channel阻塞
-						taskChan <- task
-					}
-				}
-			}
+			hostList = append(hostList, host)
+		}
+	}
 
-		}
-	}else if taskType == "ipfile_hostfile" {
-		ip_f, err := os.Open(*vars.IpFile)
-		defer ip_f.Close()
-		if err != nil {
-			return err
-		}
-		ip_buf := bufio.NewReader(ip_f)
+	// port list
+	if len(*vars.Iports) > 0 {
+		portList = strings.Split(*vars.Iports, ",")
+	}
 
-		host_f, err := os.Open(*vars.HostFile)
-		defer host_f.Close()
+	// 创建vars.ThreadNum个协程
+	for i := 0; i < *vars.Thread; i++ {
+		go goScan(taskChan, resultChan, &taskWg, &threadWg)
+		threadWg.Add(1)
+	}
+
+	go func(wg *sync.WaitGroup) {
+		wg.Add(1)
+
+		defer wg.Done()
+
+		fp, err := os.OpenFile(*vars.OutFile, os.O_APPEND|os.O_WRONLY|os.O_CREATE, 0666)
 		if err != nil {
-			return err
+			elog.Warn(fmt.Sprintf("Open file[%s]: %s", *vars.OutFile, err))
+			return
 		}
-		host_buf := bufio.NewReader(host_f)
+		defer fp.Close()
 
 		for {
-			ip, err := ip_buf.ReadString(10)
-			ip = strings.TrimSpace(ip)
-			if err != nil {
-				if err == io.EOF {
-					break
+			select {
+			case result, ok := <-resultChan:
+				if !ok {
+					return
 				}
-				return err
+				elog.Info(fmt.Sprintf("Uri: %s, Hostname: %s", result.Uri, result.Host))
+				t, _ := json.Marshal(result)
+				_, _ = fp.WriteString(string(t) + "\n")
+			}
+		}
+	}(&threadWg)
+
+	for _, ip := range ipList {
+		for _, port := range portList {
+			// check connection first, if <ip:port> is not reachable, skip
+			if !utils.CheckPort(ip, port) {
+				if *vars.Verbose {
+					elog.Warn(fmt.Sprintf("IP: %s, Port: %s --> Connection Failed", ip, port))
+				}
+				continue
 			}
 
-			for {
-				host, err := host_buf.ReadString(10)
-				host = strings.TrimSpace(host)
-				if err != nil {
-					if err == io.EOF {
-						break
+			for _, host := range hostList {
+				for _, scheme := range schemeList {
+					if scheme == "http" && port == "443" {
+						continue
 					}
-					return err
-				}
-
-				for _, scheme := range vars.Schemes {
-					handled_set := HandleCustomPorts(host, ip)
-					for _,item := range handled_set{
-						task := Task{
-							Uri:  fmt.Sprintf("%s://%s", scheme, item.IP),
-							Host: item.Host,
-						}
-						// 生产者，不断地往taskChan channel发送数据，直到channel阻塞
-						taskChan <- task
+					if scheme == "https" && port == "80" {
+						continue
 					}
+					taskChan <- Task{
+						Uri:  fmt.Sprintf("%s://%s:%s", scheme, ip, port),
+						Host: host,
+					}
+					taskWg.Add(1)
 				}
 			}
 		}
 	}
 
+	// wait for all task to done
+	taskWg.Wait()
 	close(taskChan)
-	wg.Wait()
+	close(resultChan)
+
+	// wait all threads to done
+	threadWg.Wait()
 
 	return nil
 }
